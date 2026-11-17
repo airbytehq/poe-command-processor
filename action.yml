@@ -45,18 +45,23 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
+        IN_COMMAND: ${{ inputs.command }}
+        IN_COMMENT_ID: ${{ inputs.comment-id }}
       run: |
         set -euo pipefail
-        if [[ "${{ inputs.command }}" ]]; then
+        if [[ "${IN_COMMAND}" ]]; then
           # Command was provided explicitly
-          echo "Using command from input: ${{ inputs.command }}"
-          command="${{ inputs.command }}"
+          echo "Using command from input: ${IN_COMMAND}"
+          command="${IN_COMMAND}"
         # Command was not provided, so we need to infer it from the comment body
-        elif [[ -z "${{ inputs.comment-id }}" ]]; then
+        elif [[ -z "${IN_COMMENT_ID}" ]]; then
           echo "No 'command' or 'comment-id' input was provided. At least one is required."
           exit 1
+        elif [[ ! "${IN_COMMENT_ID}" =~ ^[0-9]+$ ]]; then
+          echo "The 'comment-id' input must be a number."
+          exit 1
         else
-          COMMENT_JSON=$(gh api repos/${{ github.repository }}/issues/comments/${{ inputs.comment-id }})
+          COMMENT_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${IN_COMMENT_ID}")
           echo "::group::👀 Debug Comment JSON"
           echo $COMMENT_JSON | jq
           echo "::endgroup::"
@@ -83,7 +88,11 @@ runs:
       id: pr-info
       shell: bash
       run: |
-        PR_JSON=$(gh api repos/${{ github.repository }}/pulls/${{ inputs.pr }})
+        if [[ ! "${IN_PR}" =~ ^[0-9]+$ ]]; then
+          echo "The 'pr' input must be a number."
+          exit 1
+        fi
+        PR_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${IN_PR}")
         echo "::group::👀 Debug PR JSON"
         echo $PR_JSON | jq
         echo $PR_JSON | jq -r .head.repo.full_name
@@ -93,6 +102,7 @@ runs:
         echo branch=$(echo $PR_JSON | jq -r .head.ref) >> $GITHUB_OUTPUT
       env:
         GH_TOKEN: ${{ inputs.github-token }}
+        IN_PR: ${{ inputs.pr }}
 
     - name: Generate run link
       id: vars
@@ -169,23 +179,30 @@ runs:
       # Pre-run and post-run markers just help the reader find the relevant
       # sections in the logs.
       shell: bash
+      env:
+        POE_COMMAND: ${{ steps.resolve-command.outputs.command }}
       run: |
         # Printing Pre-Run Marker
         echo "------------------------------------"
         echo "------------------------------------"
-        echo "-- Running Command: 'poe ${{ steps.resolve-command.outputs.command }}' --"
+        echo "-- Running Command: 'poe ${POE_COMMAND}' --"
         echo "------------------------------------"
         echo "------------------------------------"
 
     - name: Run `poe ${{ steps.resolve-command.outputs.command }}`
       shell: bash
       id: run-poe-task
+      env:
+        POE_COMMAND: ${{ steps.resolve-command.outputs.command }}
       run: |
         set -euo pipefail
 
+        # Split the command on spaces into the task name and its arguments.
+        read -ra poe_args <<< "${POE_COMMAND}"
+
         set +e  # Temporarily disable exit on error to capture exit code
 
-        poe ${{ steps.resolve-command.outputs.command }}
+        poe "${poe_args[@]}"
 
         EXIT_CODE=$?
         set -e  # Re-enable exit on error
@@ -193,7 +210,7 @@ runs:
         # Printing Post-Run Marker
         echo "------------------------------------"
         echo "------------------------------------"
-        echo "-- Execution Completed: 'poe ${{ steps.resolve-command.outputs.command }}' --"
+        echo "-- Execution Completed: 'poe ${POE_COMMAND}' --"
         echo "------------------------------------"
         echo "------------------------------------"
 
